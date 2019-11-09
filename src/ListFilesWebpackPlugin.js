@@ -1,7 +1,7 @@
 /*
  * @Date: 2019-11-04 10:48:58
  * @LastEditors: guangling
- * @LastEditTime: 2019-11-08 23:00:17
+ * @LastEditTime: 2019-11-09 23:06:49
  */
 
 const fs = require('fs')
@@ -9,19 +9,98 @@ const url = require('url')
 const path = require('path')
 
 const merge = require('lodash.merge');
-const keys  = require('lodash.keys');
-const pick  = require('lodash.pick');
-const get   = require('lodash.get');
-const has   = require('lodash.has');
+const keys = require('lodash.keys');
+const pick = require('lodash.pick');
+const get = require('lodash.get');
+const has = require('lodash.has');
 const chalk = require('chalk');
+
+const EventEmitter = require('events');
 
 const CompilationAssets = require('./CompilationAssets')
 
 const isMerging = Symbol('isMerging');
 const PLUGIN_NAME = 'ListFilesWebpackPlugin';
 
-class ListFilesWebpackPlugin {
-  constructor(options = {}) {}
+class ListFilesWebpackPlugin extends EventEmitter {
+  constructor(options) {
+    super()
+    
+    options = options || Object.create(null);
+
+    const defaults = {
+      output: 'manifest.json',
+      replacer: null,
+      space: 2,
+      writeToDisk: false,
+      fileExtRegex: /\.\w{2,4}\.(?:map|gz)$|\.\w+$/i,
+      sortManifest: true,
+      merge: false,
+      publicPath: null,
+      customize: null,
+      contextRelativeKeys: false,
+    };
+
+    this.options = pick(
+      merge({}, defaults, options),
+      keys(defaults)
+    );
+
+    this.assets = options.assets || Object.create(null);
+    this.compiler = null;
+    this.stats = null;
+
+    [ 'apply', 'moduleAsset', 'processAssets', 'done' ].forEach( key => {
+      if ( options[ key ] ) {
+        this.on(key, options[ key ]);
+      }
+    }, this);
+  }
+
+  /**
+   * @description: 
+   * @param {type} 
+   * @return: 
+   */
+  set(key, value) {
+    if (this.isMerging && this.options.merge !== 'customize') {
+      this.assets[key] = value;
+      return this;
+    }
+
+    const originalValue = value;
+    value = this.getPublicPath(value);
+
+    if (this.options.customize && typeof this.options.customize === 'function') {
+      const custom = this.options.customize(key, value, originalValue, this);
+
+      if (custom === false) {
+        return this;
+      }
+
+      if (typeof custom === 'object') {
+        if (has(custom, 'key')) {
+          key = custom.key;
+        }
+
+        if (has(custom, 'value')) {
+          value = custom.value;
+        }
+      }
+    }
+
+    this.assets[this.fixKey(key)] = value;
+
+    return this;
+  }
+
+  getStatsData(stats) {
+    if (typeof stats !== 'object') {
+      throw new TypeError('stats must be an object');
+    }
+
+    return this.stats = stats.toJson('verbose');
+  }
 
   /**
    * @description: 
@@ -149,6 +228,40 @@ class ListFilesWebpackPlugin {
    * @param {type} 
    * @return: 
    */
+  fixKey(key) {
+    return key.replace(/\\/g, '/');
+  }
+
+  /**
+   * @description: 
+   * @param {type} 
+   * @return: 
+   */
+  getPublicPath(filename) {
+    const publicPath = this.options.publicPath;
+
+    if (typeof publicPath === 'function') {
+      return publicPath(filename, this);
+    }
+
+    if (typeof filename === 'string') {
+      if (typeof publicPath === 'string') {
+        return url.resolve(publicPath, filename);
+      }
+
+      if (publicPath === true) {
+        return url.resolve(this.compiler.options.output.publicPath, filename);
+      }
+    }
+
+    return filename;
+  }
+
+  /**
+   * @description: 
+   * @param {type} 
+   * @return: 
+   */
   processCompilationEntries(compilation) {
     compilation.entries.forEach(this.processCompilationEntry.bind(this, compilation));
   }
@@ -172,10 +285,6 @@ class ListFilesWebpackPlugin {
 
       for (let i = 0, l = filenames.length; i < l; ++i) {
         const filename = name + this.getExtension(filenames[i]);
-
-        if (this.isHMR(filenames[i])) {
-          continue;
-        }
 
         this.set(filename, filenames[i]);
       }
@@ -211,10 +320,9 @@ class ListFilesWebpackPlugin {
    * @description: 
    * @param {type} 
    * @return: 
-   */  
-  handleAfterEmit(compilation, callback)
-  {
-    if ( ! this.options.writeToDisk ) {
+   */
+  handleAfterEmit(compilation, callback) {
+    if (!this.options.writeToDisk) {
       callback();
       return;
     }
@@ -245,12 +353,14 @@ class ListFilesWebpackPlugin {
 
     this.compiler = compiler;
 
+    console.time('listFiles')
     compiler.plugin('compilation', this.handleCompilation.bind(this));
     compiler.plugin('emit', this.handleEmit.bind(this));
     compiler.plugin('after-emit', this.handleAfterEmit.bind(this));
     compiler.plugin('done', this.emit.bind(this, 'done', this));
 
     this.emit('apply', this);
+    console.timeEnd('listFiles')
   }
 }
 

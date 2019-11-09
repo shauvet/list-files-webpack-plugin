@@ -1,6 +1,6 @@
 {
   "name": "list-files-webpack-plugin",
-  "version": "0.0.1",
+  "version": "0.0.15",
   "description": "list build files",
   "main": "index.js",
   "scripts": {
